@@ -4,4 +4,4 @@ Multiple machine learning algorithms, ranging from Random Forests to Support Vec
 This project aims to improve the accuracy of predicting fake news by developing an optimized ensemble model using stacking and model averaging techniques.
 
 **The dataset can be found at**
-Dataset: https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset/data
+https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset/data
