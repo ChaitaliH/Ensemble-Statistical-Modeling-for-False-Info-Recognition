@@ -1,0 +1,510 @@
+---
+title: "Statistics Learning Final Project"
+format: html
+editor: visual
+---
+
+## Introduction
+
+### 1.1 Project Background
+
+-   As the volume and complexity of news data continue to grow, traditional models may struggle to achieve high accuracy in distinguishing between fake and true news articles. In this project we are using ensemble modeling, which combines the strengths of multiple individual models, emerges as a powerful strategy to improve predictive performance and mitigate errors.
+-   The ensemble modeling strategy involves integrating the predictions from three different models, namely Model A, Model B, and Model C. Each of these models is trained on the same dataset but leverages distinct algorithms, features, or parameters. The ensemble then combines these individual predictions to create a consolidated and more robust prediction.
+-   Dataset link: https://www.kaggle.com/datasets/clmentbisaillon/fake-and-real-news-dataset/data
+
+### 1.2 Main Takeaway
+
+-   Two great things about our project:
+
+    1.  Learn and show how to process text data (normally we process numeric data)
+    2.  show ensemble model
+
+### 1.3 Outcome
+
+-   We learn how to process text data and build a model to predict fake news.
+-   Our model get ? % accuracy and ?% sensitivity.
+-   Among all the models, ? is the best model.
+-   The most important words are ? for fake news
+
+## Data Cleaning and Preprocessing
+
+### 2.1 Load the Packages
+
+```{r, message=FALSE, warning=FALSE}
+library(readr)
+library(dplyr)
+library(stringr)
+library(ggplot2)
+library(tidyr)
+library(tm)
+library(textstem) 
+library(tidytext)
+library(wordcloud2)
+library(pROC)
+library(ROCR)
+library(randomForest) 
+library(naivebayes)
+library(caret)
+```
+
+### 2.2 Load the Data
+
+We have two datasets "Fake.csv" and "True.csv" with 23481 and 21417 observations respectively. Let's load the data.
+
+```{r, message=FALSE, warning=FALSE}
+fake <- read_csv('Fake.csv')
+true <- read_csv('True.csv')
+```
+
+### 2.3 Data Exploration (EDA)
+
+```{r}
+head(fake)
+```
+
+```{r}
+head(true)
+```
+
+First, we add a new column to each dataset to indicate whether the news is fake or true. Then we use "0" to indicate "fake news" and "1" to indicate "true news".
+
+```{r}
+fake$category <- 0
+true$category <- 1
+```
+
+Now, we will merge two datasets into one dataset - "news" and make sure that the category column is a factor variable.
+
+```{r}
+news <- bind_rows(fake, true)
+```
+
+```{r}
+news$category <- as.factor(news$category)
+```
+
+```{r}
+glimpse(news)
+```
+
+We will see how many fake news and true news we have in our dataset.
+
+```{r}
+ggplot(news, aes(x = category, fill = category)) + 
+    geom_bar() +
+    theme(axis.title = element_text(face = 'bold', size = 15),
+          axis.text = element_text(size = 13)) 
+```
+
+We can tell that our dataset is balanced.
+
+Also, further we change the data type of subject column to factor variable as well.
+
+```{r}
+news$subject <- as.factor(news$subject)
+
+news %>%
+  group_by(subject) %>%
+  count() %>%
+  arrange(desc(n))
+```
+
+```{r}
+news %>%
+  group_by(subject) %>%
+  count(sort = TRUE) %>%
+  rename(freq = n) %>%
+  ggplot(aes(x = reorder(subject, -freq), y = freq)) + 
+  geom_bar(stat = 'identity', fill = 'skyblue') +
+  theme_classic() +
+  xlab('Subject') +
+  ylab('frequency') +
+  geom_text(aes(label = freq), vjust = 1.2, fontface = 'bold') +
+  theme(axis.title = element_text(face = 'bold', size = 15),
+        axis.text = element_text(size = 13, angle = 90))
+```
+
+Looking at the plot, "political news" is the most popular Subject in our dataset.
+
+```{r}
+ggplot(news, aes(x = subject, fill = category)) +
+  geom_bar(position = 'dodge', alpha = 0.6) +
+  theme(axis.title = element_text(face = 'bold', size = 15),
+        axis.text = element_text(size = 13, angle = 90))
+```
+
+Above plot shows that most types of news have quite a lot number of fake news. And Subjects are different for both categories
+
+Next we will check the missing values.
+
+```{r}
+summary(is.na(news))
+```
+
+Only text column has missing values. As we are combining title and text column together, we will not do anything with those missing values. Also, title can provide information.
+
+In chunk below we combine title and text column, as we think title is also important for our analysis, and we can do text mining together with text. An id is set for each row as we don't have title.
+
+```{r}
+news <- news %>% 
+  select(title, text, category) %>%
+  unite(col = text ,title, text, sep = ' ')  %>%  
+  mutate(ID = as.character(1:nrow(news)))    # Uniqe row ID for furt
+glimpse(news)
+```
+
+### 2.4 Data Cleaning
+
+For text mining, we use "tm" package. First, we need to create the object Corpus.
+
+```{r}
+doc <- VCorpus(VectorSource(news$text))
+```
+
+Remove punctuation, numbers, stop words, and convert all words to lower case.
+
+```{r}
+# Convert text to lower case
+doc <- tm_map(doc, content_transformer(tolower))
+
+# Remove numbers
+doc <- tm_map(doc, removeNumbers)
+
+# Remove Punctuations
+doc <- tm_map(doc, removePunctuation)
+
+# Remove Stopwords
+doc <- tm_map(doc, removeWords, stopwords('english'))
+
+# Remove Whitespace
+doc <- tm_map(doc, stripWhitespace)
+```
+
+Checking results.
+
+```{r}
+writeLines(as.character(doc[[45]]))
+```
+
+There are still some punctuations present in the text. We will remove them as well.
+
+```{r}
+doc <- tm_map(doc, content_transformer(str_remove_all), "[[:punct:]]")
+writeLines(as.character(doc[[45]]))
+writeLines(as.character(doc[[50]]))
+```
+
+Looks good. Next we perform "Lemmatization". Lemmatization is the process of removing the affixes from a word and extracting the main part of the word, usually the extracted word will be the word in the dictionary, unlike stemming, where the extracted word does not necessarily appear in the word dictionary. (In this step, we will keep only verbs)
+
+```{r}
+doc <- tm_map(doc, content_transformer(lemmatize_strings))
+```
+
+Next we create the document term matrix(DTM). Document term matrix is a mathematical matrix that describes the frequency of terms that occur in a collection of documents. In a document term matrix, rows correspond to documents in the collection and columns correspond to terms. The term frequencies in each document are recorded in the matrix cells.
+
+```{r}
+dtm <- DocumentTermMatrix(doc)
+inspect(dtm)
+```
+
+And then, we remove sparse terms. Sparse terms are terms that appear in very few documents. sparsity = 1 - number of non-zero elements / number of all elements, 0.99 means that we will remove all terms that appear in less than 1% of the documents, and We will remove them because they are not useful for our analysis.
+
+```{r}
+dtm.clean <- removeSparseTerms(dtm, sparse = 0.99)
+inspect(dtm.clean)
+```
+
+Now, we have a clean document term matrix to create the word cloud.
+
+```{r}
+# Create Tidy data
+df.tidy <- tidy(dtm.clean)
+df.word<- df.tidy %>% 
+    select(-document) %>%
+    group_by(term) %>%
+    summarize(freq = sum(count)) %>%
+    arrange(desc(freq))
+
+# Word cloud
+set.seed(1234) 
+wordcloud2(data=df.word, size=1.6, color='random-dark')
+```
+
+This is the word cloud for all the news. We can see that the most frequent words are: say, president, people, state, government, vote etc. Let's see the word cloud for fake news and true news separately.
+
+```{r}
+# Word cloud for the fake news
+set.seed(1234)
+df.tidy %>% 
+    inner_join(news, by = c('document' = 'ID')) %>% 
+    select(-text) %>%
+    group_by(term, category) %>%
+    summarize(freq = sum(count)) %>%
+    filter(category == 0) %>%
+    select(-category) %>%
+    arrange(desc(freq)) %>%
+    wordcloud2(size = 1.4,  color='random-dark')
+```
+
+```{r}
+# Word cloud for the true news
+set.seed(1234)
+df.tidy %>% 
+    inner_join(news, by = c('document' = 'ID')) %>% 
+    select(-text) %>%
+    group_by(term, category) %>%
+    summarize(freq = sum(count)) %>%
+    filter(category == 1) %>%
+    select(-category) %>%
+    arrange(desc(freq)) %>%
+    wordcloud2(size = 1.6,  color='random-dark')
+```
+
+We can see that the most frequent words for fake news are Trump, president, obama, clinton, etc. And the most frequent words for true news are trump, say, state, republican, reuters etc. Now, we will convert DTM to matrix
+
+```{r}
+dtm.mat <- as.matrix(dtm.clean)
+dim(dtm.mat)
+```
+
+```{r}
+dtm.mat <- cbind(dtm.mat, category = news$category)
+dtm.mat[1:10, c(1, 2, 3, ncol(dtm.mat))]
+```
+
+Here first 10 observations for category are 1 whereas in news data initial observations are 0 (fake news).
+
+```{r}
+summary(dtm.mat[,'category'])
+```
+
+From summary minimum value of category is 1 and maximum value of category is 2. So we can tell that 0 & 1 are replaced by 1 & 2 respectively. This is because of the way we have created the document term matrix. We will replace 1 by 0 and 2 by 1.
+
+```{r}
+as.data.frame(dtm.mat) %>% count(category)
+news %>% count(category)
+```
+
+```{r}
+# Convert matrix to data frame
+dtm.df <- as.data.frame(dtm.mat)
+
+# Replace values in category by original values (1 by 0 & 2 by 1)
+dtm.df$category <- ifelse(dtm.df$category == 2, 1, 0)
+dtm.df$category <- as.factor(dtm.df$category)
+table(dtm.df$category)
+```
+
+Finally, we split the data into training and testing sets.
+
+```{r}
+# Create 75:25 split
+set.seed(1234)
+index <- sample(nrow(dtm.df), nrow(dtm.df)*0.75, replace = FALSE)
+
+train_news <- dtm.df[index,]
+test_news <- dtm.df[-index,]
+
+names(train_news) <- make.names(names(train_news))
+names(test_news) <- make.names(names(test_news))
+
+table(train_news$category)
+table(test_news$category)
+```
+
+Looking at above numbers, the data for fake and true looks balanced. Next we build models.
+
+## Training Model
+
+### 3.1 Naive Bayes Model
+
+Naive Bayes Model is a classification technique based on Bayes' Theorem with an assumption of independence among predictors. It tries to get the most likely outcome under given input.
+
+![](Snipaste_2023-12-12_10-21-02.png)
+
+```{r}
+mdl_nb <- naive_bayes(category ~ ., data = train_news)
+
+summary(mdl_nb)
+```
+
+### 3.2 Logistic Regression Model
+
+Logistic regression is a good choice for the binary model because it models the outcome as a probability using a link function.
+
+```{r}
+# Logistic Regression Model
+mdl_lr <- glm(formula = category ~.,
+              data = train_news,
+              family = 'binomial')
+```
+
+### 3.3 Random Forest Model
+
+We incorporate this tree based method, as based on our Homework #9, Random Forest Model actually provide the best outcome among other tree- based model.
+
+```{r}
+# Random Forest Model
+k <- round(sqrt(ncol(train_news)-1))
+mdl_rf <- randomForest(formula = category ~ ., 
+                       data = train_news,
+                       ntree = 100,
+                       mtry = k,
+                       method = 'class')
+mdl_rf
+```
+
+We can also show the feature importance.
+
+```{r}
+options(repr.plot.width = 9, repr.plot.height = 6)
+varImpPlot(mdl_rf, type = 1)
+```
+
+### 3.4 Ensemble Model
+
+Further we use predictive RMSE for weight, and build another ensemble model that stacking this three models together and try to see if we can get better results.
+
+```{r}
+# Predicted values
+train_news$pred_nb <- predict(mdl_nb, type = 'class')
+train_news$pred_lr <- predict(mdl_lr, type = 'response')
+train_news$pred_rf <- predict(mdl_rf, type = 'response')
+```
+
+```{r}
+# Predicted Values for test set
+test_news$pred_nb <- predict(mdl_nb, newdata = test_news)
+test_news$pred_lr <- predict(mdl_lr, newdata = test_news, type = 'response')
+test_news$pred_rf <- predict(mdl_rf, newdata = test_news, type = 'response')
+```
+
+```{r}
+yhat.nb <- as.numeric(test_news$pred_nb)
+yhat.lr <- as.numeric(test_news$pred_lr)
+yhat.rf <- as.numeric(test_news$pred_rf)
+
+y <- as.numeric(test_news$category)
+
+logloss.nb <- -mean(y * log(yhat.nb) + (1 - y) * log(1 - yhat.nb))
+logloss.lr <- -mean(y * log(yhat.lr) + (1 - y) * log(1 - yhat.lr))
+logloss.rf <- -mean(y * log(yhat.rf) + (1 - y) * log(1 - yhat.rf))
+
+logloss <- c(model1 = logloss.nb,
+             model2 = logloss.lr,
+             model3 = logloss.rf)
+
+
+weights <- 1 / logloss
+
+
+predictions <- list(model1 = yhat.nb,
+                    model2 = yhat.lr,
+                    model3 = yhat.rf)
+
+
+ensemble_predictions <- caret::combine(predictions, weights = weights)
+
+```
+
+## Model Analysis
+
+```{r}
+# Plot ROC Curve for train set
+prediction(as.numeric(train_news$pred_nb), as.numeric(train_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(col = 'red', lwd = 2)
+
+prediction(as.numeric(train_news$pred_lr), as.numeric(train_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'blue', lwd = 2)
+
+prediction(as.numeric(train_news$pred_rf), as.numeric(train_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'green', lwd = 2)
+
+legend(0.8, 0.2, legend=c("NB", "Logistic", "RF"),
+       col=c("red", "blue", 'green'), lty = 1, cex = 1.2, box.lty = 0)
+```
+
+Logistic Regression & Random Forest Model fits data almost perfectly.
+
+```{r}
+# Plot ROC Curve for test set
+prediction(as.numeric(test_news$pred_nb), as.numeric(test_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(col = 'red', lwd = 2)
+
+prediction(as.numeric(test_news$pred_lr), as.numeric(test_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'blue', lwd = 2)
+
+prediction(as.numeric(test_news$pred_rf), as.numeric(test_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'green', lwd = 2)
+
+prediction(as.numeric(ensemble_predictions), as.numeric(test_news$category)) %>%
+    performance('tpr', 'fpr') %>%
+    plot(add = TRUE, col = 'gold', lwd = 2)
+
+legend(0.8, 0.2, legend=c("NB", "Logistic", "RF", "Ensemble"),
+       col=c("red", "blue", 'green', 'gold'), lty = 1, cex = 1.2, box.lty = 0)
+```
+
+```{r}
+# Set Threshold for Logistic Regression Model
+roc(test_news$category, test_news$pred_lr) %>% coords()
+
+test_news$pred_lr <- ifelse(test_news$pred_lr > 0.5, 1, 0)
+test_news$pred_lr <- as.factor(test_news$pred_lr)
+```
+
+```{r}
+# Confussion Matrix
+conf_nb <- caret::confusionMatrix(test_news$category, test_news$pred_nb)
+conf_lr <- caret::confusionMatrix(test_news$category, test_news$pred_lr)
+conf_rf <- caret::confusionMatrix(test_news$category, test_news$pred_rf)
+conf_es <- caret::confusionMatrix(test_news$category, ensemble_predictions)
+```
+
+```{r}
+# Heatmap of Confusion Matrix
+bind_rows(as.data.frame(conf_nb$table), as.data.frame(conf_lr$table), as.data.frame(conf_rf$table), as.data.frame(conf_es$table)) %>% 
+  mutate(Model = rep(c('Naive Bayes', 'Logistic Regression', 'Random Forest', 'Ensemble'), each = 4)) %>%
+  ggplot(aes(x = Reference, y = Prediction, fill = Freq)) +
+  geom_tile() +
+  labs(x = 'Actual', y = 'Predicted') +
+  scale_fill_gradient(low = "#CCE5FF", high = "#000099") +
+  scale_x_discrete(limits = c('1', '0'), labels = c('1' = 'Not Fake', '0' = 'Fake')) +
+  scale_y_discrete(labels = c('1' = 'Not Fake', '0' = 'Fake')) +
+  facet_grid(. ~ Model) +
+  geom_text(aes(label = Freq), fontface = 'bold') +
+  theme(panel.background = element_blank(),
+        legend.position = 'none',
+        axis.line = element_line(colour = "black"),
+        axis.title = element_text(size = 14, face = 'bold'),
+        axis.text = element_text(size = 11, face = 'bold'),
+        axis.text.y = element_text(angle = 90, hjust = 0.5),
+        strip.background = element_blank(),
+        strip.text = element_text(size = 12, face = 'bold'))
+```
+
+```{r}
+acc <- c(nb = conf_nb[['overall']]['Accuracy'], 
+         lr = conf_lr[['overall']]['Accuracy'],
+         rf = conf_rf[['overall']]['Accuracy'],
+         es = conf_es[['overall']]['Accuracy'])
+precision <- c(nb = conf_nb[['byClass']]['Pos Pred Value'], 
+               lr = conf_lr[['byClass']]['Pos Pred Value'], 
+               rf = conf_rf[['byClass']]['Pos Pred Value'],
+               es = conf_es[['byClass']]['Pos Pred Value'])
+recall <- c(nb = conf_nb[['byClass']]['Sensitivity'], 
+            lr = conf_lr[['byClass']]['Sensitivity'],
+            rf = conf_rf[['byClass']]['Sensitivity'],
+            es = conf_es[['byClass']]['Sensitivity'])
+
+data.frame(Model = c('Naive Bayes', 'Logistic Regression', 'Random Forest', 'Ensemble'),
+           Accuracy = acc,
+           F1_Score = (2 * precision * recall) / (precision + recall),
+           row.names = NULL)
+```
